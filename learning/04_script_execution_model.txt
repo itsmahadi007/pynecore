@@ -1,0 +1,292 @@
+Script Execution Model
+======================
+
+PyneCore follows Pine Script's execution model: scripts run once per bar (candle), processing historical data sequentially. This document explains how the execution system works.
+
+## 1. Script Lifecycle
+
+### Script Structure
+```python
+@pyne
+from pynecore import *
+
+@script.indicator("My Indicator")
+def main():
+    # This function runs once per bar
+    length = input(14, "Length")
+    ema_value = ta.ema(close, length)
+    plot(ema_value, "EMA")
+```
+
+### Execution Flow
+```
+Script Import
+     ↓
+AST Transformation
+     ↓
+ScriptRunner.run_iter()
+     ↓
+┌─────────────────────────┐
+│    For Each Bar:        │
+├─────────────────────────┤
+│ 1. Set lib properties   │
+│ 2. Update bar_index     │
+│ 3. Set OHLCV values     │
+│ 4. Call main()          │
+│ 5. Collect plot data    │
+│ 6. Update series        │
+└─────────────────────────┘
+     ↓
+Output Results
+```
+
+## 2. ScriptRunner Class
+
+Location: `src/pynecore/core/script_runner.py`
+
+### Initialization
+```python
+class ScriptRunner:
+    def __init__(self, script_path, ohlcv_iter, syminfo, **kwargs):
+        # Import and validate script
+        self.script_module = import_script(script_path)
+        
+        # Ensure main function has proper decorator
+        if not hasattr(self.script_module.main, 'script'):
+            raise ImportError("main function must be decorated")
+        
+        # Store execution context
+        self.script = self.script_module.main.script
+        self.ohlcv_iter = ohlcv_iter
+        self.syminfo = syminfo
+```
+
+### Bar-by-Bar Execution
+```python
+def run_iter(self, on_progress=None):
+    for bar_index, ohlcv in enumerate(self.ohlcv_iter):
+        # 1. Set library properties for current bar
+        _set_lib_properties(ohlcv, bar_index, self.tz, lib)
+        
+        # 2. Set symbol information
+        _set_lib_syminfo_properties(self.syminfo, lib)
+        
+        # 3. Execute main function
+        result = self.script_module.main()
+        
+        # 4. Collect outputs
+        plot_data = lib._plot_data.copy()
+        
+        # 5. Yield results
+        yield ohlcv, plot_data
+```
+
+## 3. Library Properties Setup
+
+### OHLCV Data Binding
+```python
+def _set_lib_properties(ohlcv, bar_index, tz, lib):
+    # Set bar information
+    lib.bar_index = lib.last_bar_index = bar_index
+    
+    # Set price data (rounded to tick precision)
+    lib.open = _round_price(ohlcv.open, lib)
+    lib.high = _round_price(ohlcv.high, lib)
+    lib.low = _round_price(ohlcv.low, lib)
+    lib.close = _round_price(ohlcv.close, lib)
+    lib.volume = ohlcv.volume
+    
+    # Calculate derived values
+    lib.hl2 = (lib.high + lib.low) / 2.0
+    lib.hlc3 = (lib.high + lib.low + lib.close) / 3.0
+    lib.ohlc4 = (lib.open + lib.high + lib.low + lib.close) / 4.0
+    lib.hlcc4 = (lib.high + lib.low + 2 * lib.close) / 4.0
+    
+    # Set time information
+    dt = datetime.fromtimestamp(ohlcv.timestamp, UTC).astimezone(tz)
+    lib._time = lib.last_bar_time = int(dt.timestamp() * 1000)
+    lib._datetime = dt
+```
+
+### Bar State Management
+```python
+# First bar
+lib.barstate.isfirst = (bar_index == 0)
+
+# Last bar (real-time)
+lib.barstate.islast = (bar_index == last_bar_index)
+
+# Historical vs real-time
+lib.barstate.ishistory = not lib.barstate.islast
+lib.barstate.isrealtime = lib.barstate.islast
+```
+
+## 4. Series State Management
+
+### Series Updates Between Bars
+After each bar execution, series values are shifted:
+
+```python
+# In SeriesImpl class
+def _on_bar_close(self):
+    if self._current_value is not None:
+        self._data.appendleft(self._current_value)
+    self._current_value = None
+```
+
+### Historical Access
+```python
+# Current bar: series[0]
+# Previous bar: series[1] 
+# 2 bars ago: series[2]
+
+class SeriesImpl:
+    def __getitem__(self, index):
+        if index == 0:
+            return self._current_value
+        elif index > 0 and index <= len(self._data):
+            return self._data[index - 1]
+        else:
+            return NA(self.type)
+```
+
+## 5. Input System
+
+Location: `src/pynecore/core/script.py`
+
+### Input Declaration
+```python
+def input(defval, title=None, **kwargs):
+    # Create input metadata
+    input_data = InputData(
+        defval=defval,
+        title=title,
+        **kwargs
+    )
+    
+    # Store in global registry
+    inputs[title] = input_data
+    
+    # Return default value for execution
+    return defval
+```
+
+### Input Processing
+Inputs are processed once at script initialization:
+1. Default values are used during execution
+2. User can override via configuration files
+3. Input validation (min/max, options) is enforced
+
+## 6. Plot System
+
+### Plot Data Collection
+```python
+def plot(series, title=None, color=None, **kwargs):
+    # Store plot data for current bar
+    lib._plot_data[title or 'plot'] = {
+        'value': series,
+        'color': color,
+        'bar_index': lib.bar_index,
+        **kwargs
+    }
+```
+
+### Plot Output
+Plot data is collected after each bar and can be:
+- Written to CSV files
+- Displayed in charts
+- Used for analysis
+
+## 7. Strategy Execution
+
+### Strategy Functions
+```python
+@script.strategy("My Strategy")
+def main():
+    if condition:
+        strategy.entry("Long", strategy.long)
+    
+    if exit_condition:
+        strategy.close("Long")
+```
+
+### Position Management
+Strategy functions manage:
+- Position tracking
+- Order execution
+- Profit/loss calculation
+- Equity curve generation
+
+## 8. Error Handling
+
+### Script Validation
+```python
+def import_script(script_path):
+    module = import_module(script_path.stem)
+    
+    if not hasattr(module, 'main'):
+        raise ImportError("Script must have a 'main' function")
+    
+    if not hasattr(module.main, 'script'):
+        raise ImportError("main function must be decorated")
+    
+    return module
+```
+
+### Runtime Error Handling
+- NA value propagation prevents calculation errors
+- Safe arithmetic functions handle edge cases
+- Series bounds checking prevents index errors
+- Type validation ensures data integrity
+
+## 9. Performance Optimizations
+
+### Lazy Evaluation
+- Series values are only calculated when accessed
+- Plot data is only collected when plotting
+- Transformations are applied only when needed
+
+### Memory Management
+- Series buffers have configurable size limits
+- Old data is automatically cleaned up
+- NA instances are cached and reused
+
+### Parallel Execution
+- Multiple scripts can run simultaneously
+- Each script has isolated state
+- Shared data sources are thread-safe
+
+## 10. Debugging and Development
+
+### Debug Output
+```bash
+# Show transformed AST
+PYNE_AST_DEBUG=1 python script.py
+
+# Save transformed code
+PYNE_AST_SAVE=1 python script.py
+```
+
+### Progress Tracking
+```python
+def on_progress(dt):
+    print(f"Processing bar: {dt}")
+
+runner.run_iter(on_progress=on_progress)
+```
+
+### State Inspection
+```python
+# Access series history
+print(f"Current EMA: {ema_value}")
+print(f"Previous EMA: {ema_value[1]}")
+print(f"EMA 5 bars ago: {ema_value[5]}")
+
+# Check bar state
+if barstate.isfirst:
+    print("First bar")
+if barstate.islast:
+    print("Last bar (real-time)")
+```
+
+This execution model ensures that PyneCore scripts behave exactly like Pine Script while providing the flexibility and power of Python's ecosystem. The bar-by-bar execution, series state management, and Pine Script-compatible semantics create a seamless transition for Pine Script developers.

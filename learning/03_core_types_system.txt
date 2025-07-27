@@ -1,0 +1,238 @@
+Core Types System
+=================
+
+PyneCore's type system is designed to replicate Pine Script's behavior while maintaining Python's type safety. The core types enable Pine Script-like semantics in Python.
+
+## 1. Series[T] Type
+
+Location: `src/pynecore/types/series.py`
+
+### Purpose
+Series[T] represents Pine Script's series data structure - values that change over time (bar by bar).
+
+### Runtime vs Compile-time Behavior
+```python
+class Series(Generic[T]):
+    def __new__(cls, val: T) -> T:
+        return val  # Runtime: just returns the value
+```
+
+**Key Points**:
+- At runtime, Series[T] is a "do nothing" implementation
+- The actual Series behavior is implemented through AST transformations
+- SeriesImpl class (in core/series.py) provides the real functionality
+- Type hints provide IDE support and type checking
+
+### How Series Works
+1. **Declaration**: `my_series: Series[float] = 0.0`
+2. **Transformation**: AST transformer creates `__series_scope·my_series__ = SeriesImpl()`
+3. **Assignment**: `my_series = value` becomes `__series_scope·my_series__[0] = value`
+4. **Access**: `my_series` becomes `__series_scope·my_series__[0]`
+5. **Historical Access**: `my_series[1]` accesses previous bar's value
+
+### SeriesImpl Implementation
+Location: `src/pynecore/core/series.py`
+
+```python
+class SeriesImpl:
+    def __init__(self, max_bars_back=5000):
+        self._data = collections.deque(maxlen=max_bars_back)
+        self._current_value = None
+    
+    def __getitem__(self, index):
+        if index == 0:
+            return self._current_value
+        # Return historical values
+        
+    def __setitem__(self, index, value):
+        if index == 0:
+            self._current_value = value
+```
+
+## 2. NA[T] Type
+
+Location: `src/pynecore/types/na.py`
+
+### Purpose
+NA[T] represents Pine Script's "na" (Not Available) values - missing or undefined data.
+
+### Key Features
+```python
+class NA(Generic[T]):
+    def __init__(self, type: Type[T] = int):
+        self.type = type
+    
+    def __add__(self, other) -> NA[T]:
+        return NA(self.type)  # NA + anything = NA
+    
+    def __bool__(self) -> bool:
+        return False  # NA is always falsy
+    
+    def __eq__(self, other) -> bool:
+        return False  # NA != anything (including NA)
+```
+
+### NA Behavior
+- **Arithmetic**: Any operation with NA returns NA
+- **Comparisons**: All comparisons with NA return False
+- **Boolean Context**: NA is always False
+- **Type Preservation**: NA[float] + 5 = NA[float]
+- **Caching**: NA instances are cached by type for performance
+
+### Safe Arithmetic Functions
+Location: `src/pynecore/core/safe_convert.py`
+
+```python
+def safe_mul(a, b):
+    if isinstance(a, NA) or isinstance(b, NA):
+        return NA(float)
+    try:
+        return a * b
+    except TypeError:
+        return NA(float)
+```
+
+These functions ensure NA values propagate correctly through calculations.
+
+## 3. Persistent[T] Type
+
+Location: `src/pynecore/types/persistent.py`
+
+### Purpose
+Persistent[T] represents variables that maintain their state between bars (Pine Script's var keyword).
+
+### Type Definition
+```python
+Persistent: TypeAlias = T | NA[T] | Series[T]
+```
+
+### How Persistent Works
+1. **Declaration**: `my_var: Persistent[int] = 0`
+2. **Transformation**: Creates persistent storage mechanism
+3. **State Preservation**: Value persists across bar executions
+4. **Initialization**: Only initialized on first bar
+
+### Example
+```python
+# Pine Script equivalent: var int counter = 0
+counter: Persistent[int] = 0
+
+@script.indicator("Counter")
+def main():
+    global counter
+    counter += 1  # Increments each bar, maintains state
+    plot(counter)
+```
+
+## 4. Source Type
+
+Location: `src/pynecore/types/source.py`
+
+### Purpose
+Source provides type-safe placeholders for built-in data sources (open, high, low, close, volume).
+
+```python
+class Source(Series[float]):
+    def __init__(self, name: str):
+        self.name = name
+    
+    def __repr__(self):
+        return f"Source({self.name})"
+```
+
+### How Sources Work
+1. **Declaration**: `close = Source("close")`
+2. **Runtime Resolution**: ScriptRunner sets actual values
+3. **Dynamic Binding**: `getattr(lib, var, lib.na)` resolves sources
+4. **Type Safety**: Provides proper type hints for IDE
+
+### Built-in Sources
+```python
+# In lib/__init__.py
+open: Series[float] = Source("open")
+high: Series[float] = Source("high")
+low: Series[float] = Source("low")
+close: Series[float] = Source("close")
+volume: Series[float] = Source("volume")
+hl2: Series[float] = Source("hl2")    # (high + low) / 2
+hlc3: Series[float] = Source("hlc3")  # (high + low + close) / 3
+ohlc4: Series[float] = Source("ohlc4") # (open + high + low + close) / 4
+```
+
+## 5. Type Stubs and IDE Support
+
+Location: `src/pynecore/types/series.pyi`
+
+Type stub files provide IDE support without affecting runtime:
+
+```python
+class Series(Generic[T]):
+    def __add__(self, other: Union[T, Series[T], NA[T]]) -> Series[T]: ...
+    def __sub__(self, other: Union[T, Series[T], NA[T]]) -> Series[T]: ...
+    def __mul__(self, other: Union[T, Series[T], NA[T]]) -> Series[T]: ...
+    def __getitem__(self, index: int) -> T | NA[T]: ...
+```
+
+## 6. Type System Integration
+
+### Script Execution Flow
+1. **Initialization**: Sources are created as placeholders
+2. **Bar Processing**: ScriptRunner updates source values
+3. **Calculation**: Series operations create new series
+4. **State Management**: Persistent variables maintain state
+5. **NA Handling**: Safe functions manage missing values
+
+### Type Relationships
+```
+Series[T] ──────────────┐
+    │                   │
+    ├── Source          │
+    │                   ▼
+    └── SeriesImpl ──── Runtime Implementation
+
+Persistent[T] ─────────┐
+    │                  │
+    ├── T              │
+    ├── NA[T] ─────────┼── Type Union
+    └── Series[T] ─────┘
+
+NA[T] ─────────────────── Special Values
+    │
+    └── Type-specific NA instances
+```
+
+## 7. Memory Management
+
+### Series Buffer Management
+- Default buffer size: 5000 bars
+- Configurable via `max_bars_back()`
+- Automatic cleanup of old data
+- Efficient deque-based storage
+
+### NA Instance Caching
+```python
+class NA:
+    _type_cache: dict[Type, NA] = {}
+    
+    def __new__(cls, type):
+        # Return cached instance for performance
+        return cls._type_cache.setdefault(type, super().__new__(cls))
+```
+
+## 8. Error Handling
+
+### Type Safety
+- Series operations return appropriate types
+- NA propagation prevents invalid calculations
+- Safe arithmetic functions handle edge cases
+- Type hints catch errors at development time
+
+### Runtime Behavior
+```python
+# These all work correctly:
+result1 = Series[float](5.0) + 3.0      # Returns 8.0
+result2 = Series[float](5.0) + NA(float) # Returns NA[float]
+result3 = NA(float) + NA(int)           # Returns NA[float]
+```
+
+This type system enables PyneCore to provide Pine Script semantics while maintaining Python's type safety and IDE support. The combination of runtime "do nothing" implementations and AST transformations creates a seamless development experience.

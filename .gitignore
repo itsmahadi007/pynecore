@@ -19,6 +19,9 @@ workdir/
 # dist directory
 dist/
 
+# jetbrains directory
+.idea/
+
 #
 # macOS
 #

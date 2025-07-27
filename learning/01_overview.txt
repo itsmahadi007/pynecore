@@ -1,0 +1,73 @@
+PyneCore Architecture Overview
+==============================
+
+PyneCore is a Python implementation of Pine Script that allows you to write Pine Script-like code directly in Python while maintaining compatibility with TradingView's Pine Script language.
+
+## Core Philosophy
+
+PyneCore takes a unique approach compared to other Pine Script implementations:
+- Instead of creating a new language or object-oriented wrappers
+- It transforms regular Python code to behave like Pine Script
+- Uses AST (Abstract Syntax Tree) transformations to modify Python code at import time
+- Maintains Python's syntax, tools, and ecosystem while providing Pine Script semantics
+
+## Key Design Principles
+
+1. **100% Pine Script Compatibility**: Aims to replicate Pine Script functionality with high precision (0.001% tolerance)
+2. **Zero Mandatory Dependencies**: Core system operates without external libraries
+3. **Maximum Performance**: Designed for speed and efficiency
+4. **Clean, Well-documented Code**: Prioritizes readability and proper documentation
+5. **AST-based Transformation**: Uses Python's AST to transform code behavior without changing syntax
+
+## Main Components
+
+1. **Core Module** (`src/pynecore/core/`)
+   - Script execution engine (ScriptRunner)
+   - Import hook system for AST transformations
+   - Series implementation and data handling
+   - OHLCV and CSV file operations
+
+2. **Types Module** (`src/pynecore/types/`)
+   - Series[T]: Pine Script-like series data structure
+   - Persistent[T]: Variables that maintain state between bars
+   - NA[T]: Not Available values (Pine Script's na)
+   - Source: Type-safe placeholders for built-in sources
+
+3. **Transformers Module** (`src/pynecore/transformers/`)
+   - AST transformers that modify Python code behavior
+   - Series transformer: Handles series variable transformations
+   - Persistent transformer: Manages persistent variable state
+   - Safe arithmetic/division transformers: Handle NA values
+
+4. **Library Module** (`src/pynecore/lib/`)
+   - Pine Script compatible function library
+   - Technical indicators and analysis functions
+   - Built-in variables (open, high, low, close, volume, etc.)
+   - Strategy and plotting functions
+
+5. **CLI Module** (`src/pynecore/cli/`)
+   - Command-line interface for running scripts
+   - Data management and processing tools
+
+6. **Providers Module** (`src/pynecore/providers/`)
+   - Data providers and integrations
+   - Support for various data sources
+
+## How It Works
+
+1. **Script Decoration**: Python functions are decorated with `@script.indicator`, `@script.strategy`, or `@script.library`
+2. **Import Hook**: When importing a script, PyneCore's import hook intercepts the process
+3. **AST Transformation**: The code is parsed into an AST and transformed by multiple transformers
+4. **Series Conversion**: Variables are converted to Series objects that track historical values
+5. **Bar-by-bar Execution**: Scripts run bar-by-bar like Pine Script, maintaining state between bars
+
+## Execution Model
+
+PyneCore follows Pine Script's execution model:
+- Scripts execute once per bar (candle)
+- Variables can be Series (tracking historical values) or Persistent (maintaining state)
+- Built-in variables (open, high, low, close) are automatically available
+- NA (Not Available) values are handled consistently with Pine Script
+- Strategy functions manage position tracking and backtesting
+
+This architecture enables Python developers to write Pine Script-compatible code while leveraging Python's ecosystem and tooling.

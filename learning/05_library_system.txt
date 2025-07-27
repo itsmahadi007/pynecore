@@ -1,0 +1,366 @@
+Library System
+==============
+
+PyneCore provides a comprehensive library that replicates Pine Script's built-in functions and variables. The library system is designed to be 100% compatible with Pine Script while leveraging Python's capabilities.
+
+## 1. Library Structure
+
+Location: `src/pynecore/lib/`
+
+### Main Library Modules
+```
+lib/
+├── __init__.py          # Core library and built-in variables
+├── ta.py               # Technical analysis functions
+├── math.py             # Mathematical functions
+├── string.py           # String manipulation functions
+├── array.py            # Array operations
+├── timeframe.py        # Timeframe handling
+├── color.py            # Color definitions
+├── plot.py             # Plotting functions
+├── strategy/           # Strategy-related functions
+├── session.py          # Session handling
+└── [other modules]     # Additional Pine Script modules
+```
+
+### Library Import System
+```python
+# In lib/__init__.py
+from . import syminfo, barstate, string, log, math, plot
+from . import timeframe as timeframe_module
+from . import session as session_module
+```
+
+## 2. Built-in Variables
+
+### Price Data Variables
+```python
+# Core OHLCV data
+open: Series[float] = Source("open")
+high: Series[float] = Source("high")
+low: Series[float] = Source("low")
+close: Series[float] = Source("close")
+volume: Series[float] = Source("volume")
+
+# Derived price variables
+hl2: Series[float] = Source("hl2")      # (high + low) / 2
+hlc3: Series[float] = Source("hlc3")    # (high + low + close) / 3
+ohlc4: Series[float] = Source("ohlc4")  # (open + high + low + close) / 4
+hlcc4: Series[float] = Source("hlcc4")  # (high + low + 2*close) / 4
+```
+
+### Bar Information Variables
+```python
+bar_index: Series[int] = 0          # Current bar index
+last_bar_index: Series[int] = 0     # Index of last bar
+last_bar_time: int = 0              # Timestamp of last bar
+```
+
+### Time Variables (Module Properties)
+```python
+# These are computed dynamically from _datetime
+@module_property
+def time() -> int:
+    """Current bar timestamp in milliseconds"""
+    return _time
+
+@module_property  
+def year() -> int:
+    """Current bar year"""
+    return _datetime.year
+
+@module_property
+def month() -> int:
+    """Current bar month (1-12)"""
+    return _datetime.month
+
+# Similar for: dayofmonth, dayofweek, hour, minute, second, weekofyear
+```
+
+## 3. Module Property System
+
+Location: `src/pynecore/core/module_property.py`
+
+### Purpose
+Module properties allow dynamic computation of values that appear as simple variables.
+
+### Implementation
+```python
+class ModuleProperty:
+    def __init__(self, func):
+        self.func = func
+        self.name = func.__name__
+    
+    def __get__(self, obj, objtype=None):
+        return self.func()
+
+def module_property(func):
+    return ModuleProperty(func)
+```
+
+### Usage Example
+```python
+@module_property
+def hour() -> int:
+    """Current hour (0-23)"""
+    return _datetime.hour
+
+# In scripts, this works like a variable:
+if hour >= 9 and hour <= 16:
+    # Trading hours logic
+```
+
+## 4. Technical Analysis Library
+
+Location: `src/pynecore/lib/ta.py`
+
+### Core Indicators
+```python
+def sma(source: Series[float], length: int) -> Series[float]:
+    """Simple Moving Average"""
+    # Implementation using Series operations
+    
+def ema(source: Series[float], length: int) -> Series[float]:
+    """Exponential Moving Average"""
+    # Implementation with proper Pine Script semantics
+    
+def rsi(source: Series[float], length: int) -> Series[float]:
+    """Relative Strength Index"""
+    # RSI calculation matching Pine Script exactly
+```
+
+### Advanced Indicators
+```python
+def macd(source, fast_length=12, slow_length=26, signal_length=9):
+    """MACD indicator returning (macd_line, signal_line, histogram)"""
+    
+def bollinger_bands(source, length=20, mult=2.0):
+    """Bollinger Bands returning (upper, middle, lower)"""
+    
+def stochastic(high, low, close, k_length=14, k_smooth=1, d_length=3):
+    """Stochastic oscillator"""
+```
+
+## 5. Mathematical Functions
+
+Location: `src/pynecore/lib/math.py`
+
+### Basic Math Functions
+```python
+def abs(x: float | Series[float]) -> float | Series[float]:
+    """Absolute value"""
+    
+def max(a: float, b: float) -> float:
+    """Maximum of two values"""
+    
+def min(a: float, b: float) -> float:
+    """Minimum of two values"""
+    
+def round(x: float, precision: int = 0) -> float:
+    """Round to specified precision"""
+```
+
+### Advanced Math Functions
+```python
+def log(x: float) -> float:
+    """Natural logarithm"""
+    
+def pow(base: float, exponent: float) -> float:
+    """Power function"""
+    
+def sqrt(x: float) -> float:
+    """Square root"""
+```
+
+## 6. String Functions
+
+Location: `src/pynecore/lib/string.py`
+
+### String Operations
+```python
+def tostring(value, format_str: str = None) -> str:
+    """Convert value to string with optional formatting"""
+    
+def length(string: str) -> int:
+    """String length"""
+    
+def substring(string: str, begin: int, end: int = None) -> str:
+    """Extract substring"""
+    
+def contains(string: str, substring: str) -> bool:
+    """Check if string contains substring"""
+```
+
+## 7. Color System
+
+Location: `src/pynecore/lib/color.py`
+
+### Color Definitions
+```python
+# Basic colors
+red = Color("#FF0000")
+green = Color("#00FF00")
+blue = Color("#0000FF")
+white = Color("#FFFFFF")
+black = Color("#000000")
+
+# Extended color palette
+maroon = Color("#800000")
+navy = Color("#000080")
+# ... many more colors
+```
+
+### Color Functions
+```python
+def new(color_value: str | int, transparency: int = 0) -> Color:
+    """Create new color with transparency"""
+    
+def rgb(red: int, green: int, blue: int, transparency: int = 0) -> Color:
+    """Create color from RGB values"""
+```
+
+## 8. Plotting System
+
+Location: `src/pynecore/lib/plot.py`
+
+### Basic Plotting
+```python
+def plot(series, title: str = None, color: Color = None, 
+         linewidth: int = 1, style: str = "line", **kwargs):
+    """Plot a series on the chart"""
+    lib._plot_data[title or f'plot_{len(lib._plot_data)}'] = {
+        'value': series,
+        'color': color,
+        'linewidth': linewidth,
+        'style': style,
+        'bar_index': lib.bar_index,
+        **kwargs
+    }
+```
+
+### Advanced Plotting
+```python
+def plotshape(series, title: str = None, location: str = "abovebar",
+              color: Color = None, style: str = "circle", **kwargs):
+    """Plot shapes on the chart"""
+    
+def plotchar(series, title: str = None, char: str = "•",
+             location: str = "abovebar", color: Color = None, **kwargs):
+    """Plot characters on the chart"""
+```
+
+## 9. Strategy System
+
+Location: `src/pynecore/lib/strategy/`
+
+### Strategy Functions
+```python
+def entry(id: str, direction: str, qty: float = None, **kwargs):
+    """Enter a position"""
+    
+def close(id: str, qty: float = None, **kwargs):
+    """Close a position"""
+    
+def exit(id: str, from_entry: str, qty: float = None, **kwargs):
+    """Exit from specific entry"""
+```
+
+### Position Information
+```python
+@module_property
+def position_size() -> float:
+    """Current position size"""
+    
+@module_property
+def position_avg_price() -> float:
+    """Average entry price"""
+```
+
+## 10. Input System
+
+Location: `src/pynecore/core/script.py`
+
+### Input Types
+```python
+def input(defval, title: str = None, input_type: str = None,
+          minval=None, maxval=None, step=None, options=None, **kwargs):
+    """Create script input parameter"""
+    
+# Usage examples:
+length = input(14, "Length", minval=1, maxval=100)
+source = input(close, "Source")
+use_ema = input(True, "Use EMA")
+method = input("SMA", "Method", options=["SMA", "EMA", "WMA"])
+```
+
+## 11. Utility Functions
+
+### NA Handling
+```python
+def na(value) -> bool:
+    """Check if value is NA"""
+    return isinstance(value, NA)
+    
+def nz(value, replacement=0):
+    """Replace NA with specified value"""
+    return replacement if na(value) else value
+    
+def fixnan(value, replacement=0):
+    """Fix NaN values"""
+    return replacement if (na(value) or math.isnan(value)) else value
+```
+
+### Series Functions
+```python
+def highest(source: Series[float], length: int) -> float:
+    """Highest value in specified number of bars"""
+    
+def lowest(source: Series[float], length: int) -> float:
+    """Lowest value in specified number of bars"""
+    
+def change(source: Series[float], length: int = 1) -> float:
+    """Change from previous bar(s)"""
+    return source - source[length]
+```
+
+## 12. Library Extension
+
+### Adding New Functions
+```python
+# In appropriate module file
+def my_custom_indicator(source: Series[float], length: int) -> Series[float]:
+    """Custom indicator implementation"""
+    # Implementation here
+    return result
+
+# Export in __all__
+__all__ = ['my_custom_indicator', ...]
+```
+
+### Module Registration
+```python
+# In lib/__init__.py
+from . import my_custom_module
+
+# Functions become available as:
+# my_custom_module.my_function()
+```
+
+## 13. Performance Considerations
+
+### Lazy Evaluation
+- Functions are only called when values are needed
+- Series calculations are optimized for bar-by-bar execution
+- Caching is used for expensive calculations
+
+### Memory Management
+- Series buffers are automatically managed
+- Old data is cleaned up based on max_bars_back settings
+- NA values are cached and reused
+
+### Vectorization
+- Where possible, operations are vectorized
+- NumPy integration for mathematical operations
+- Efficient algorithms for technical indicators
+
+The library system provides a complete Pine Script-compatible environment while maintaining the flexibility to extend and customize functionality. The modular design allows for easy addition of new functions and indicators while preserving compatibility with existing Pine Script code.

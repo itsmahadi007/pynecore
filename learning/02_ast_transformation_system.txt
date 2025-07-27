@@ -1,0 +1,172 @@
+AST Transformation System
+=========================
+
+The AST (Abstract Syntax Tree) transformation system is the heart of PyneCore. It allows regular Python code to behave like Pine Script without changing the syntax.
+
+## How AST Transformation Works
+
+### 1. Import Hook System
+Location: `src/pynecore/core/import_hook.py`
+
+The import hook intercepts Python's import process:
+- `PyneImportHook`: Finds Python files that need transformation
+- `PyneLoader`: Handles the actual AST transformation
+- Only processes files containing `@pyne` decorator
+- Uses regex to quickly check for `@pyne` before parsing AST
+
+### 2. Transformation Pipeline
+
+When a script with `@pyne` is imported, it goes through this transformation chain:
+
+```
+Python Source Code
+       ↓
+   Parse to AST
+       ↓
+┌─────────────────────────────────────┐
+│        Transformation Chain         │
+├─────────────────────────────────────┤
+│ 1. ImportLifterTransformer          │
+│ 2. ImportNormalizerTransformer      │
+│ 3. PersistentSeriesTransformer      │
+│ 4. LibrarySeriesTransformer         │
+│ 5. ModulePropertyTransformer        │
+│ 6. ClosureArgumentsTransformer      │
+│ 7. FunctionIsolationTransformer     │
+│ 8. UnusedSeriesDetectorTransformer  │
+│ 9. SeriesTransformer                │
+│ 10. PersistentTransformer           │
+│ 11. InputTransformer                │
+│ 12. SafeConvertTransformer          │
+│ 13. SafeDivisionTransformer         │
+└─────────────────────────────────────┘
+       ↓
+   Compile to Bytecode
+       ↓
+   Execute
+```
+
+### 3. Key Transformers
+
+#### SeriesTransformer (`src/pynecore/transformers/series.py`)
+- **Purpose**: Converts regular variables to Series objects
+- **What it does**:
+  - Identifies variables that should be Series
+  - Creates global SeriesImpl instances
+  - Transforms variable assignments to Series operations
+  - Handles function scoping for Series variables
+
+**Example Transformation**:
+```python
+# Before transformation:
+def main():
+    ema_length = 14
+    ema_value = ta.ema(close, ema_length)
+    
+# After transformation:
+__series_main·ema_value__ = SeriesImpl()
+
+def main():
+    ema_length = 14
+    __series_main·ema_value__[0] = ta.ema(close, ema_length)
+    ema_value = __series_main·ema_value__[0]
+```
+
+#### PersistentTransformer (`src/pynecore/transformers/persistent.py`)
+- **Purpose**: Handles variables that maintain state between bars
+- **What it does**:
+  - Identifies Persistent[T] type annotations
+  - Creates persistent storage for variables
+  - Manages initialization and state preservation
+
+#### SafeArithmeticTransformer
+- **Purpose**: Handles arithmetic operations with NA values
+- **What it does**:
+  - Converts `+`, `-`, `*` operations to `safe_add()`, `safe_sub()`, `safe_mul()`
+  - Ensures NA values propagate correctly through calculations
+
+#### SafeDivisionTransformer
+- **Purpose**: Handles division by zero and NA values
+- **What it does**:
+  - Converts `/` operations to safe division functions
+  - Returns NA when dividing by zero or NA
+
+### 4. Series Implementation
+
+Location: `src/pynecore/core/series.py`
+
+The SeriesImpl class provides the runtime behavior:
+- Stores historical values in a buffer
+- Supports indexing with `[0]` (current), `[1]` (previous), etc.
+- Automatically manages buffer size and memory
+- Provides Pine Script-like series semantics
+
+### 5. Debug and Development
+
+Environment variables for debugging:
+- `PYNE_AST_DEBUG=1`: Shows transformed code with syntax highlighting
+- `PYNE_AST_DEBUG_RAW=1`: Shows raw transformed code
+- `PYNE_AST_SAVE=1`: Saves transformed code to `/tmp/pyne/`
+
+### 6. Performance Optimizations
+
+- **Lazy Loading**: Transformers are only imported when needed
+- **Fast Filtering**: Regex check for `@pyne` before AST parsing
+- **Caching**: Bytecode caching with custom markers for site-packages
+- **Scope Optimization**: Only transforms variables that need Series behavior
+
+### 7. Type Safety
+
+The transformation system maintains type safety:
+- Series[T] preserves the inner type T
+- NA[T] represents missing values of type T
+- Source provides type-safe placeholders for built-in sources
+- Type stubs (`.pyi` files) provide IDE support
+
+## Example: Complete Transformation
+
+**Original Python Code**:
+```python
+@pyne
+from pynecore import *
+
+@script.indicator("EMA Cross")
+def main():
+    fast_length = input(12, "Fast EMA")
+    slow_length = input(26, "Slow EMA")
+    
+    fast_ema = ta.ema(close, fast_length)
+    slow_ema = ta.ema(close, slow_length)
+    
+    signal = fast_ema > slow_ema
+    plot(fast_ema, "Fast EMA", color.blue)
+    plot(slow_ema, "Slow EMA", color.red)
+```
+
+**After Transformation** (simplified):
+```python
+from pynecore.core.series import SeriesImpl
+
+__series_main·fast_ema__ = SeriesImpl()
+__series_main·slow_ema__ = SeriesImpl()
+__series_main·signal__ = SeriesImpl()
+
+@script.indicator("EMA Cross")
+def main():
+    fast_length = input(12, "Fast EMA")
+    slow_length = input(26, "Slow EMA")
+    
+    __series_main·fast_ema__[0] = ta.ema(close, fast_length)
+    fast_ema = __series_main·fast_ema__[0]
+    
+    __series_main·slow_ema__[0] = ta.ema(close, slow_length)
+    slow_ema = __series_main·slow_ema__[0]
+    
+    __series_main·signal__[0] = safe_gt(fast_ema, slow_ema)
+    signal = __series_main·signal__[0]
+    
+    plot(fast_ema, "Fast EMA", color.blue)
+    plot(slow_ema, "Slow EMA", color.red)
+```
+
+This transformation system is what makes PyneCore unique - it allows Python code to behave like Pine Script while maintaining Python's syntax and ecosystem compatibility.

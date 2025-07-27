@@ -1,0 +1,472 @@
+Data Flow and Processing
+========================
+
+This document explains how data flows through PyneCore, from input sources to final outputs, including OHLCV processing, series management, and result generation.
+
+## 1. Data Flow Overview
+
+```
+Data Sources
+     ↓
+┌─────────────────────────┐
+│    Data Providers       │
+│  - CSV Files            │
+│  - CCXT (Crypto)        │
+│  - Capital.com          │
+│  - Custom Providers     │
+└─────────────────────────┘
+     ↓
+┌─────────────────────────┐
+│    OHLCV Processing     │
+│  - Data Validation      │
+│  - Timestamp Parsing    │
+│  - Price Rounding       │
+│  - Volume Processing    │
+└─────────────────────────┘
+     ↓
+┌─────────────────────────┐
+│   ScriptRunner          │
+│  - Bar-by-bar Execution │
+│  - Library Setup        │
+│  - Series Management    │
+│  - State Tracking       │
+└─────────────────────────┘
+     ↓
+┌─────────────────────────┐
+│   Script Execution      │
+│  - Input Processing     │
+│  - Calculations         │
+│  - Plot Generation      │
+│  - Strategy Signals     │
+└─────────────────────────┘
+     ↓
+┌─────────────────────────┐
+│   Output Generation     │
+│  - Plot Data            │
+│  - Strategy Results     │
+│  - Equity Curves        │
+│  - CSV Exports          │
+└─────────────────────────┘
+```
+
+## 2. Data Sources and Providers
+
+Location: `src/pynecore/providers/`
+
+### OHLCV Data Structure
+```python
+@dataclass
+class OHLCV:
+    timestamp: float    # Unix timestamp
+    open: float        # Opening price
+    high: float        # Highest price
+    low: float         # Lowest price
+    close: float       # Closing price
+    volume: float      # Trading volume
+```
+
+### CSV File Provider
+Location: `src/pynecore/core/csv_file.py`
+
+```python
+class CSVReader:
+    def __init__(self, file_path: Path, **kwargs):
+        self.file_path = file_path
+        self.delimiter = kwargs.get('delimiter', ',')
+        
+    def read_ohlcv(self) -> Iterator[OHLCV]:
+        """Read OHLCV data from CSV file"""
+        with open(self.file_path, 'r') as f:
+            reader = csv.DictReader(f, delimiter=self.delimiter)
+            for row in reader:
+                yield OHLCV(
+                    timestamp=self._parse_timestamp(row['timestamp']),
+                    open=float(row['open']),
+                    high=float(row['high']),
+                    low=float(row['low']),
+                    close=float(row['close']),
+                    volume=float(row['volume'])
+                )
+```
+
+### CCXT Provider (Cryptocurrency)
+Location: `src/pynecore/providers/ccxt.py`
+
+```python
+class CCXTProvider:
+    def __init__(self, exchange_name: str, symbol: str, timeframe: str):
+        self.exchange = getattr(ccxt, exchange_name)()
+        self.symbol = symbol
+        self.timeframe = timeframe
+        
+    def fetch_ohlcv(self, since=None, limit=None) -> Iterator[OHLCV]:
+        """Fetch OHLCV data from exchange"""
+        data = self.exchange.fetch_ohlcv(
+            self.symbol, self.timeframe, since, limit
+        )
+        
+        for candle in data:
+            yield OHLCV(
+                timestamp=candle[0] / 1000,  # Convert to seconds
+                open=candle[1],
+                high=candle[2],
+                low=candle[3],
+                close=candle[4],
+                volume=candle[5]
+            )
+```
+
+## 3. Symbol Information
+
+Location: `src/pynecore/core/syminfo.py`
+
+### SymInfo Class
+```python
+@dataclass
+class SymInfo:
+    ticker: str                    # Symbol ticker (e.g., "BTCUSD")
+    prefix: str = ""              # Exchange prefix
+    currency: str = "USD"         # Base currency
+    pricescale: int = 100         # Price scale factor
+    mintick: float = 0.01         # Minimum tick size
+    timezone: str = "UTC"         # Exchange timezone
+    session: str = "24x7"         # Trading session
+    
+    # Additional metadata
+    description: str = ""
+    type: str = "crypto"
+    sector: str = ""
+    industry: str = ""
+```
+
+### Price Rounding
+```python
+def _round_price(price: float, lib: ModuleType) -> float:
+    """Round price to nearest tick"""
+    syminfo = lib.syminfo
+    scaled = round(price * syminfo.pricescale)
+    return scaled * syminfo.mintick
+```
+
+## 4. Bar-by-Bar Processing
+
+### ScriptRunner Execution Loop
+```python
+def run_iter(self) -> Iterator[tuple[OHLCV, dict]]:
+    """Main execution loop"""
+    
+    for bar_index, ohlcv in enumerate(self.ohlcv_iter):
+        # 1. Update bar state
+        lib.barstate.isfirst = (bar_index == 0)
+        lib.barstate.islast = (bar_index == self.last_bar_index)
+        lib.barstate.ishistory = not lib.barstate.islast
+        lib.barstate.isrealtime = lib.barstate.islast
+        
+        # 2. Set current bar data
+        _set_lib_properties(ohlcv, bar_index, self.tz, lib)
+        
+        # 3. Update symbol information
+        if self.update_syminfo_every_run:
+            _set_lib_syminfo_properties(self.syminfo, lib)
+        
+        # 4. Execute script main function
+        try:
+            result = self.script_module.main()
+        except Exception as e:
+            # Handle script errors
+            raise ScriptExecutionError(f"Error in bar {bar_index}: {e}")
+        
+        # 5. Collect outputs
+        plot_data = lib._plot_data.copy()
+        lib._plot_data.clear()
+        
+        # 6. Handle strategy results
+        if self.script.script_type == ScriptType.STRATEGY:
+            trades = self._process_strategy_signals()
+            yield ohlcv, plot_data, trades
+        else:
+            yield ohlcv, plot_data
+        
+        # 7. Update series for next bar
+        self._update_series_state()
+```
+
+## 5. Series Data Management
+
+### Series State Updates
+```python
+def _update_series_state(self):
+    """Update all series for next bar"""
+    
+    # Get all series instances from function registry
+    for function_name, series_names in __series_function_vars__.items():
+        for series_name in series_names:
+            series_instance = globals().get(series_name)
+            if series_instance:
+                series_instance._on_bar_close()
+```
+
+### SeriesImpl Data Storage
+```python
+class SeriesImpl:
+    def __init__(self, max_bars_back=5000):
+        self._data = collections.deque(maxlen=max_bars_back)
+        self._current_value = None
+        self.type = float
+    
+    def _on_bar_close(self):
+        """Called at end of each bar"""
+        if self._current_value is not None:
+            self._data.appendleft(self._current_value)
+        self._current_value = None
+    
+    def __setitem__(self, index: int, value):
+        """Set current bar value"""
+        if index == 0:
+            self._current_value = value
+        else:
+            raise IndexError("Can only set current bar value")
+    
+    def __getitem__(self, index: int):
+        """Get historical values"""
+        if index == 0:
+            return self._current_value
+        elif 1 <= index <= len(self._data):
+            return self._data[index - 1]
+        else:
+            return NA(self.type)
+```
+
+## 6. Library Property Updates
+
+### OHLCV Property Setting
+```python
+def _set_lib_properties(ohlcv: OHLCV, bar_index: int, tz, lib):
+    """Set library properties for current bar"""
+    
+    # Basic bar information
+    lib.bar_index = lib.last_bar_index = bar_index
+    
+    # Price data (rounded to tick precision)
+    lib.open = _round_price(ohlcv.open, lib)
+    lib.high = _round_price(ohlcv.high, lib)
+    lib.low = _round_price(ohlcv.low, lib)
+    lib.close = _round_price(ohlcv.close, lib)
+    lib.volume = ohlcv.volume
+    
+    # Derived price calculations
+    lib.hl2 = (lib.high + lib.low) / 2.0
+    lib.hlc3 = (lib.high + lib.low + lib.close) / 3.0
+    lib.ohlc4 = (lib.open + lib.high + lib.low + lib.close) / 4.0
+    lib.hlcc4 = (lib.high + lib.low + 2 * lib.close) / 4.0
+    
+    # Time information
+    dt = datetime.fromtimestamp(ohlcv.timestamp, UTC).astimezone(tz)
+    lib._datetime = dt
+    lib._time = lib.last_bar_time = int(dt.timestamp() * 1000)
+```
+
+## 7. Input Processing
+
+### Input Value Resolution
+```python
+def input(defval, title=None, **kwargs):
+    """Process script input"""
+    
+    # Create input metadata
+    input_data = InputData(
+        defval=defval,
+        title=title,
+        **kwargs
+    )
+    
+    # Store in global registry
+    inputs[title] = input_data
+    
+    # Check for user override
+    if title in old_input_values:
+        return old_input_values[title]
+    
+    # Return default value
+    return defval
+```
+
+### Input Validation
+```python
+def _validate_input(value, input_data: InputData):
+    """Validate input value against constraints"""
+    
+    # Check min/max bounds
+    if input_data.minval is not None and value < input_data.minval:
+        raise ValueError(f"Value {value} below minimum {input_data.minval}")
+    
+    if input_data.maxval is not None and value > input_data.maxval:
+        raise ValueError(f"Value {value} above maximum {input_data.maxval}")
+    
+    # Check options
+    if input_data.options and value not in input_data.options:
+        raise ValueError(f"Value {value} not in options {input_data.options}")
+    
+    return value
+```
+
+## 8. Plot Data Collection
+
+### Plot Function Processing
+```python
+def plot(series, title=None, color=None, **kwargs):
+    """Collect plot data for current bar"""
+    
+    plot_key = title or f'plot_{len(lib._plot_data)}'
+    
+    lib._plot_data[plot_key] = {
+        'value': series,
+        'color': color,
+        'bar_index': lib.bar_index,
+        'timestamp': lib._time,
+        **kwargs
+    }
+```
+
+### Plot Data Export
+```python
+class CSVWriter:
+    def write_plot_data(self, plot_data: dict):
+        """Write plot data to CSV"""
+        
+        if not self.headers_written:
+            headers = ['timestamp', 'bar_index'] + list(plot_data.keys())
+            self.writer.writerow(headers)
+            self.headers_written = True
+        
+        row = [plot_data.get('timestamp', ''), plot_data.get('bar_index', '')]
+        for key in self.headers[2:]:  # Skip timestamp and bar_index
+            row.append(plot_data.get(key, {}).get('value', ''))
+        
+        self.writer.writerow(row)
+```
+
+## 9. Strategy Processing
+
+### Trade Execution
+```python
+def strategy_entry(id: str, direction: str, qty: float = None):
+    """Process strategy entry signal"""
+    
+    trade = Trade(
+        id=id,
+        direction=direction,
+        qty=qty or lib.strategy.default_qty_value,
+        price=lib.close,
+        bar_index=lib.bar_index,
+        timestamp=lib._time
+    )
+    
+    # Add to pending trades
+    lib.strategy._pending_trades.append(trade)
+```
+
+### Position Management
+```python
+class PositionTracker:
+    def update_position(self, trade: Trade):
+        """Update position based on trade"""
+        
+        if trade.direction == 'long':
+            self.long_qty += trade.qty
+        elif trade.direction == 'short':
+            self.short_qty += trade.qty
+        
+        # Calculate average price
+        total_qty = self.long_qty + self.short_qty
+        if total_qty > 0:
+            self.avg_price = (
+                (self.avg_price * self.prev_qty + trade.price * trade.qty) 
+                / total_qty
+            )
+```
+
+## 10. Error Handling and Validation
+
+### Data Validation
+```python
+def validate_ohlcv(ohlcv: OHLCV) -> bool:
+    """Validate OHLCV data integrity"""
+    
+    # Check for valid prices
+    if not all(isinstance(x, (int, float)) and x >= 0 
+               for x in [ohlcv.open, ohlcv.high, ohlcv.low, ohlcv.close]):
+        return False
+    
+    # Check high/low relationship
+    if ohlcv.high < ohlcv.low:
+        return False
+    
+    # Check OHLC relationships
+    if not (ohlcv.low <= ohlcv.open <= ohlcv.high and 
+            ohlcv.low <= ohlcv.close <= ohlcv.high):
+        return False
+    
+    # Check volume
+    if ohlcv.volume < 0:
+        return False
+    
+    return True
+```
+
+### NA Value Handling
+```python
+def safe_calculation(func, *args):
+    """Safely perform calculation with NA handling"""
+    
+    # Check for NA values in arguments
+    for arg in args:
+        if isinstance(arg, NA):
+            return NA(float)
+    
+    try:
+        result = func(*args)
+        return result
+    except (ZeroDivisionError, ValueError, TypeError):
+        return NA(float)
+```
+
+## 11. Performance Optimizations
+
+### Memory Management
+```python
+class SeriesImpl:
+    def cleanup_old_data(self):
+        """Remove old data beyond max_bars_back"""
+        while len(self._data) > self.max_bars_back:
+            self._data.pop()
+```
+
+### Lazy Evaluation
+```python
+class LazyCalculation:
+    def __init__(self, func, *args):
+        self.func = func
+        self.args = args
+        self._result = None
+        self._calculated = False
+    
+    def get_value(self):
+        if not self._calculated:
+            self._result = self.func(*self.args)
+            self._calculated = True
+        return self._result
+```
+
+### Caching
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=1024)
+def expensive_calculation(source, length):
+    """Cache expensive calculations"""
+    # Expensive computation here
+    return result
+```
+
+This data flow system ensures efficient processing of financial data while maintaining Pine Script compatibility and providing robust error handling and performance optimizations.

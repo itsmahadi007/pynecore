@@ -1,0 +1,25 @@
+# PyneCore Data Provider Configuration
+# This file contains configuration for various data providers
+
+# CCXT Provider Configuration
+[ccxt]
+# Exchange-specific settings
+[ccxt.binance]
+apiKey = "YOUR_API_KEY"
+secret = "YOUR_SECRET_KEY"
+enableRateLimit = true
+
+[ccxt.kucoin]
+apiKey = "YOUR_API_KEY"
+secret = "YOUR_SECRET_KEY"
+password = "YOUR_API_PASSWORD"  # Some exchanges require this
+enableRateLimit = true
+
+# Capital.com Provider Configuration
+[capitalcom]
+# If it is a demo account
+demo = false
+# These are required for Capital.com. You can get them from the Capital.com API settings.
+user_email = "your.email@example.com"
+api_key = "YOUR_API_KEY"
+api_password = "YOUR_API_PASSWORD"
